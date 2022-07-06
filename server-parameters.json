@@ -1,0 +1,10 @@
+[
+    {
+        "ParameterKey": "EnvironmentName",
+        "ParameterValue": "Udagram"
+    },
+    {
+        "ParameterKey": "LatestAmiId",
+        "ParameterValue": "ami-052efd3df9dad4825"
+    }
+]

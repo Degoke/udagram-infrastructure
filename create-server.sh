@@ -1,0 +1,1 @@
+./create.sh udagram-server server.yml server-parameters.json

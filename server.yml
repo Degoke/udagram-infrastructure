@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: alx- udacity Udagram server infrastructure
+
+Parameters:
+
+  EnvironmentName:
+    Description: Enviroment name
+    Type: String
+
+  LatestAmiId:
+    Description: Region specific image form the parameter store
+    Type: 'AWS::SSM::PARAMETER::VALUE<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn-ami-hvm-x86_64-s3'
+
+  InstanceType:
+    Description: Amazon ec2 instance type
+    Type: String
+    AllowedValues:
+      - t3.medium
+    Default: t3.medium
+
+Resources:
+
+  AppInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - udagramS3ReadOnly
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to load balancer
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow http to our hosft and ssh from local only
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Bastion jump box security group
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 102.89.40.116/0
+
+  AppLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo apt-get update -y
+          sudo apt-get install apache2 -y
+          sudo systemctl start apache2.service
+          sudo apt install awscli -y
+          sudo aws s3 cp s3://degoke-udagram-website-files/index.html /var/www/html/index.html
+      ImageId: !Ref LatestAmiId
+      KeyName: udacity-alx
+      SecurityGroups:
+        - Ref: WebServerSecurityGroup
+      InstanceType: !Ref InstanceType
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sdk"
+          Ebs:
+            VolumeSize: '10'
+      IamInstanceProfile: !Ref AppInstanceProfile
+
+  BastionLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref LatestAmiId
+      KeyName: udacity-alx
+      SecurityGroups:
+        - Ref: BastionSecurityGroup
+      InstanceType: !Ref InstanceType
+
+  BastionGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB-NETS"
+      LaunchConfigurationName: !Ref BastionLaunchConfig
+      MinSize: '1'
+      MaxSize: '1'
+      DesiredCapacity: '1'
+
+  AppGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PRIV-NETS"
+      LaunchConfigurationName: !Ref AppLaunchConfig
+      MinSize: '4'
+      MaxSize: '6'
+      DesiredCapacity: '4'
+      TargetGroupARNs:
+        - Ref: AppTargetGroup
+
+  AppLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB-SN-1"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB-SN-2"
+      SecurityGroups: 
+        - Ref: LoadBalancerSecurityGroup
+
+  AppLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref AppTargetGroup
+      LoadBalancerArn: !Ref AppLoadBalancer
+      Port: '80'
+      protocol: HTTP
+
+  AppLoadBalancerListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref AppTargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values: [/]
+      ListenerArn: !Ref AppLoadBalancerListener
+      Priority: 1
+
+  AppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+
+Outputs:
+
+  LoadBalancer:
+    Description: Load balancer DNS address
+    Value:
+      Fn::Join:
+        - ''
+        - - "http://"
+          - !GetAtt AppLoadBalancer.DNSName
+    Export:
+      Name: !Sub ${EnvironmentName}-LB-DNS
